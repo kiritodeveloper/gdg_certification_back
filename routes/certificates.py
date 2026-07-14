@@ -206,16 +206,16 @@ def send_bulk():
 @admin_required
 def import_excel():
     """
-    Importa participantes desde un archivo Excel y los crea como certificados.
+    Importa participantes desde un archivo Excel (.xlsx) o CSV (.csv) y los crea como certificados.
 
-    El Excel debe tener las columnas:
-        - Nombre completo (obligatorio)
-        - Email (obligatorio)
-        - Fecha de emisión (opcional, formato YYYY-MM-DD)
-        - Descripción (opcional)
+    El archivo debe tener las columnas:
+        - Columna A: Nombre completo (obligatorio)
+        - Columna B: Email (obligatorio)
+        - Columna C: Fecha de emisión (opcional, formato YYYY-MM-DD)
+        - Columna D: Descripción (opcional)
 
     Se envía como multipart/form-data con:
-        - file: archivo .xlsx o .xls
+        - file: archivo .xlsx o .csv
         - evento_id: ID del evento
     """
     try:
@@ -241,16 +241,33 @@ def import_excel():
         if not evento:
             return jsonify({"error": f"Evento {evento_id} no encontrado"}), 404
 
-        import openpyxl
+        filename = file.filename or ""
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
-        wb = openpyxl.load_workbook(file, read_only=True, data_only=True)
-        ws = wb.active
-
-        rows = list(ws.iter_rows(min_row=2, values_only=True))
-        wb.close()
+        rows = []
+        if ext in ("xlsx", "xls"):
+            import openpyxl
+            wb = openpyxl.load_workbook(file, read_only=True, data_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(min_row=2, values_only=True))
+            wb.close()
+        elif ext == "csv":
+            import csv
+            import io as _io
+            try:
+                raw = file.read().decode("utf-8-sig")
+            except UnicodeDecodeError:
+                file.seek(0)
+                raw = file.read().decode("latin-1")
+            reader = csv.reader(_io.StringIO(raw))
+            header = next(reader, None)  # saltar encabezado
+            for csv_row in reader:
+                rows.append(tuple(csv_row))
+        else:
+            return jsonify({"error": "Formato no soportado. Use archivos .xlsx o .csv"}), 400
 
         if not rows:
-            return jsonify({"error": "El Excel está vacío (sin filas de datos)"}), 400
+            return jsonify({"error": "El archivo está vacío (sin filas de datos)"}), 400
 
         creado_por = request.user["email"]
         created = []
@@ -342,3 +359,240 @@ def verify(code):
 
     except Exception as e:
         return jsonify({"error": f"Error interno: {str(e)}"}), 500
+
+
+@certs_bp.route("/public/lookup", methods=["POST"])
+def public_lookup():
+    """
+    Busca certificados por email (portal público).
+    RUTA PÚBLICA - No requiere autenticación.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        email = data.get("email", "").strip().lower()
+        if not email or "@" not in email:
+            return jsonify({"error": "Email inválido"}), 400
+
+        from models.google_sheets import db
+        db.connect()
+
+        records = db.certs_sheet.get_all_values()
+        if len(records) <= 1:
+            return jsonify({"found": False, "message": "No hay certificados registrados"}), 200
+
+        email_idx = db._CERT_HEADERS.index("email")
+        certs = []
+        for row in records[1:]:
+            if len(row) > email_idx and row[email_idx].strip().lower() == email:
+                c = db._row_to_dict(db._CERT_HEADERS, row)
+                c["id"] = db._safe_int(c["id"])
+                c["evento_id"] = db._safe_int(c.get("evento_id", 0))
+                c["enviado"] = str(c.get("enviado", "False")).strip().lower() == "true"
+
+                evento = None
+                if c.get("evento_id"):
+                    evento = db.get_event_by_id(c["evento_id"])
+                c["evento_nombre"] = evento.get("nombre", "") if evento else ""
+
+                certs.append({
+                    "id": c["id"],
+                    "nombre_completo": c["nombre_completo"],
+                    "evento_id": c["evento_id"],
+                    "evento_nombre": c["evento_nombre"],
+                    "fecha_emision": c["fecha_emision"],
+                    "descripcion": c["descripcion"],
+                    "codigo_verif": c["codigo_verif"],
+                    "enviado": c["enviado"],
+                })
+
+        if not certs:
+            return jsonify({"found": False, "message": "No se encontraron certificados para este email"}), 200
+
+        return jsonify({"found": True, "certificates": certs, "total": len(certs)}), 200
+
+    except Exception as e:
+        logger.error(f"Error en lookup público: {e}")
+        return jsonify({"error": "Error interno"}), 500
+
+
+@certs_bp.route("/public/download/<int:cert_id>", methods=["GET"])
+def public_download(cert_id):
+    """
+    Genera y descarga el PDF de un certificado por ID (portal público).
+    RUTA PÚBLICA - No requiere autenticación.
+    El email se valida como query param.
+    """
+    try:
+        email = request.args.get("email", "").strip().lower()
+        if not email:
+            return jsonify({"error": "Email requerido como parámetro"}), 400
+
+        from models.google_sheets import db
+        cert = db.get_certificate_by_id(cert_id)
+        if not cert:
+            return jsonify({"error": "Certificado no encontrado"}), 404
+
+        if cert["email"].strip().lower() != email:
+            return jsonify({"error": "El email no coincide con el certificado"}), 403
+
+        pdf_path = certificate_service.generate_certificate_pdf(cert)
+
+        return_data = open(pdf_path, "rb").read()
+        filename = f"certificado_{cert['nombre_completo'].replace(' ', '_')}.pdf"
+
+        from flask import make_response
+        response = make_response(return_data)
+        response.headers["Content-Type"] = "application/pdf"
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+        logger.info(f"PDF descargado públicamente: cert {cert_id} por {email}")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error descarga pública: {e}")
+        return jsonify({"error": "Error interno"}), 500
+
+
+@certs_bp.route("/public/activate/<code>", methods=["GET"])
+def public_activate(code):
+    """
+    Activa un certificado por su código de verificación y genera el PDF.
+
+    RUTA PÚBLICA — No requiere autenticación.
+    El participante recibe el código por email y lo usa aquí para descargar.
+    """
+    try:
+        cert = certificate_service.verify_certificate(code)
+        if not cert:
+            return jsonify({
+                "valid": False,
+                "message": "Codigo de activacion invalido o certificado no encontrado"
+            }), 404
+
+        # Obtener nombre del evento
+        evento = None
+        if cert.get("evento_id"):
+            from models.google_sheets import db
+            evento = db.get_event_by_id(cert["evento_id"])
+
+        # Generar el PDF al activar
+        pdf_path = certificate_service.generate_certificate_pdf(cert)
+
+        return_data = open(pdf_path, "rb").read()
+        filename = f"certificado_{cert['nombre_completo'].replace(' ', '_')}.pdf"
+
+        from flask import make_response
+        response = make_response(return_data)
+        response.headers["Content-Type"] = "application/pdf"
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+        logger.info(f"Certificado activado y descargado: {code}")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error activando certificado {code}: {e}")
+        return jsonify({"error": "Error interno"}), 500
+
+
+@certs_bp.route("/public/activate/<code>/info", methods=["GET"])
+def public_activate_info(code):
+    """
+    Retorna la info del certificado sin generar el PDF.
+    Útil para mostrar una vista previa antes de descargar.
+    """
+    try:
+        cert = certificate_service.verify_certificate(code)
+        if not cert:
+            return jsonify({
+                "valid": False,
+                "message": "Codigo invalido"
+            }), 404
+
+        evento = None
+        if cert.get("evento_id"):
+            from models.google_sheets import db
+            evento = db.get_event_by_id(cert["evento_id"])
+
+        return jsonify({
+            "valid": True,
+            "certificate": {
+                "nombre_completo": cert["nombre_completo"],
+                "evento_id": cert.get("evento_id"),
+                "evento_nombre": evento.get("nombre", "") if evento else "",
+                "fecha_emision": cert["fecha_emision"],
+                "descripcion": cert["descripcion"],
+                "codigo_verif": cert["codigo_verif"],
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error en activate info: {e}")
+        return jsonify({"error": "Error interno"}), 500
+
+
+@certs_bp.route("/public/search", methods=["POST"])
+def public_search():
+    """
+    Busca certificados por nombre o email (público, sin auth).
+
+    Body JSON:
+        { "query": "maria" }   o   { "query": "maria@ejemplo.com" }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        query = data.get("query", "").strip()
+        if not query or len(query) < 2:
+            return jsonify({"found": False, "message": "Ingresa al menos 2 caracteres"}), 200
+
+        from models.google_sheets import db
+        db.connect()
+
+        records = db.certs_sheet.get_all_values()
+        if len(records) <= 1:
+            return jsonify({"found": False, "message": "No hay certificados registrados"}), 200
+
+        headers = db._CERT_HEADERS
+        name_idx = headers.index("nombre_completo")
+        email_idx = headers.index("email")
+        query_lower = query.lower()
+
+        certs = []
+        for row in records[1:]:
+            if len(row) <= max(name_idx, email_idx):
+                continue
+            nombre = row[name_idx].strip().lower() if row[name_idx] else ""
+            email = row[email_idx].strip().lower() if row[email_idx] else ""
+
+            match = query_lower in nombre or query_lower in email
+            if not match:
+                continue
+
+            c = db._row_to_dict(headers, row)
+            c["id"] = db._safe_int(c["id"])
+            c["evento_id"] = db._safe_int(c.get("evento_id", 0))
+            c["enviado"] = str(c.get("enviado", "False")).strip().lower() == "true"
+
+            evento = None
+            if c.get("evento_id"):
+                evento = db.get_event_by_id(c["evento_id"])
+
+            certs.append({
+                "id": c["id"],
+                "nombre_completo": c["nombre_completo"],
+                "email": c["email"],
+                "evento_id": c["evento_id"],
+                "evento_nombre": evento.get("nombre", "") if evento else "",
+                "fecha_emision": c["fecha_emision"],
+                "descripcion": c["descripcion"],
+                "codigo_verif": c["codigo_verif"],
+                "enviado": c["enviado"],
+            })
+
+        if not certs:
+            return jsonify({"found": False, "message": "No se encontraron certificados"}), 200
+
+        return jsonify({"found": True, "certificates": certs, "total": len(certs)}), 200
+
+    except Exception as e:
+        logger.error(f"Error en búsqueda pública: {e}")
+        return jsonify({"error": "Error interno"}), 500

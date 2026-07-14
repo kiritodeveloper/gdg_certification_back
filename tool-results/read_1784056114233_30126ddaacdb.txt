@@ -1,0 +1,763 @@
+     1→     1→     1→import { useState, useEffect, useRef, type FormEvent } from 'react';
+     2→     2→     2→import {
+     3→     3→     3→  Plus,
+     4→     4→     4→  Search,
+     5→     5→     5→  Send,
+     6→     6→     6→  Pencil,
+     7→     7→     7→  Trash2,
+     8→     8→     8→  Mail,
+     9→     9→     9→  FileCheck,
+    10→    10→    10→  Upload,
+    11→    11→    11→  FileSpreadsheet,
+    12→    12→    12→  AlertCircle,
+    13→    13→    13→  CheckCircle2,
+    14→    14→    14→  X,
+    15→    15→    15→} from 'lucide-react';
+    16→    16→    16→import { useAuth, useCertificates } from '../hooks';
+    17→    17→    17→import { eventApi, certApi } from '../api';
+    18→    18→    18→import {
+    19→    19→    19→  Button,
+    20→    20→    20→  Input,
+    21→    21→    21→  Textarea,
+    22→    22→    22→  Select,
+    23→    23→    23→  Modal,
+    24→    24→    24→  toast,
+    25→    25→    25→} from '../components/ui';
+    26→    26→    26→import type { Certificate, CertificatePayload, Event } from '../types';
+    27→    27→    27→
+    28→    28→    28→interface ImportError {
+    29→    29→    29→  row: number;
+    30→    30→    30→  reason: string;
+    31→    31→    31→}
+    32→    32→    32→
+    33→    33→    33→export default function CertificatesPage() {
+    34→    34→    34→  const { isAdmin } = useAuth();
+    35→    35→    35→  const {
+    36→    36→    36→    certificates,
+    37→    37→    37→    loading,
+    38→    38→    38→    fetchAll,
+    39→    39→    39→    create,
+    40→    40→    40→    update,
+    41→    41→    41→    remove,
+    42→    42→    42→    sendSingle,
+    43→    43→    43→    sendBulk,
+    44→    44→    44→  } = useCertificates();
+    45→    45→    45→
+    46→    46→    46→  const [events, setEvents] = useState<Event[]>([]);
+    47→    47→    47→  const [search, setSearch] = useState('');
+    48→    48→    48→  const [filterStatus, setFilterStatus] = useState<'all' | 'sent' | 'pending'>('all');
+    49→    49→    49→  const [filterEvent, setFilterEvent] = useState('');
+    50→    50→    50→  const [selected, setSelected] = useState<Set<number>>(new Set());
+    51→    51→    51→  const [modalOpen, setModalOpen] = useState(false);
+    52→    52→    52→  const [editingId, setEditingId] = useState<number | null>(null);
+    53→    53→    53→  const [sending, setSending] = useState<number | null>(null);
+    54→    54→    54→  const [form, setForm] = useState<CertificatePayload>({
+    55→    55→    55→    nombre_completo: '',
+    56→    56→    56→    email: '',
+    57→    57→    57→    evento_id: 0,
+    58→    58→    58→    fecha_emision: new Date().toISOString().split('T')[0],
+    59→    59→    59→    descripcion: '',
+    60→    60→    60→  });
+    61→    61→    61→  const [errors, setErrors] = useState<Record<string, string>>({});
+    62→    62→    62→
+    63→    63→    63→  // ── Import Excel state ──
+    64→    64→    64→  const [importModalOpen, setImportModalOpen] = useState(false);
+    65→    65→    65→  const [importEventId, setImportEventId] = useState(0);
+    66→    66→    66→  const [importFecha, setImportFecha] = useState(new Date().toISOString().split('T')[0]);
+    67→    67→    67→  const [importFile, setImportFile] = useState<File | null>(null);
+    68→    68→    68→  const [importing, setImporting] = useState(false);
+    69→    69→    69→  const [importResult, setImportResult] = useState<{
+    70→    70→    70→    created_count: number;
+    71→    71→    71→    failed_count: number;
+    72→    72→    72→    failed: ImportError[];
+    73→    73→    73→    evento: string;
+    74→    74→    74→  } | null>(null);
+    75→    75→    75→  const fileInputRef = useRef<HTMLInputElement>(null);
+    76→    76→    76→
+    77→    77→    77→  useEffect(() => {
+    78→    78→    78→    fetchAll();
+    79→    79→    79→    fetchEvents();
+    80→    80→    80→  }, [fetchAll]);
+    81→    81→    81→
+    82→    82→    82→  const fetchEvents = async () => {
+    83→    83→    83→    try {
+    84→    84→    84→      const { events: data } = await eventApi.getAll();
+    85→    85→    85→      setEvents(data);
+    86→    86→    86→    } catch {
+    87→    87→    87→      // Non-critical
+    88→    88→    88→    }
+    89→    89→    89→  };
+    90→    90→    90→
+    91→    91→    91→  const getEventName = (id: number) =>
+    92→    92→    92→    events.find((e) => e.id === id)?.nombre || `Evento #${id}`;
+    93→    93→    93→
+    94→    94→    94→  const eventOptions = events.map((e) => ({
+    95→    95→    95→    value: String(e.id),
+    96→    96→    96→    label: e.nombre,
+    97→    97→    97→  }));
+    98→    98→    98→
+    99→    99→    99→  const filterEventOptions = [
+   100→   100→   100→    { value: '', label: 'Todos los eventos' },
+   101→   101→   101→    ...eventOptions,
+   102→   102→   102→  ];
+   103→   103→   103→
+   104→   104→   104→  // Filter & search
+   105→   105→   105→  const filtered = certificates.filter((c) => {
+   106→   106→   106→    const eventName = getEventName(c.evento_id);
+   107→   107→   107→    const matchSearch =
+   108→   108→   108→      !search ||
+   109→   109→   109→      c.nombre_completo.toLowerCase().includes(search.toLowerCase()) ||
+   110→   110→   110→      c.email.toLowerCase().includes(search.toLowerCase()) ||
+   111→   111→   111→      eventName.toLowerCase().includes(search.toLowerCase()) ||
+   112→   112→   112→      c.codigo_verif.toLowerCase().includes(search.toLowerCase());
+   113→   113→   113→    const matchStatus =
+   114→   114→   114→      filterStatus === 'all' ||
+   115→   115→   115→      (filterStatus === 'sent' && c.enviado) ||
+   116→   116→   116→      (filterStatus === 'pending' && !c.enviado);
+   117→   117→   117→    const matchEvent = !filterEvent || c.evento_id === Number(filterEvent);
+   118→   118→   118→    return matchSearch && matchStatus && matchEvent;
+   119→   119→   119→  });
+   120→   120→   120→
+   121→   121→   121→  // ── Form handling ──
+   122→   122→   122→  const openCreate = () => {
+   123→   123→   123→    setEditingId(null);
+   124→   124→   124→    setForm({
+   125→   125→   125→      nombre_completo: '',
+   126→   126→   126→      email: '',
+   127→   127→   127→      evento_id: 0,
+   128→   128→   128→      fecha_emision: new Date().toISOString().split('T')[0],
+   129→   129→   129→      descripcion: '',
+   130→   130→   130→    });
+   131→   131→   131→    setErrors({});
+   132→   132→   132→    setModalOpen(true);
+   133→   133→   133→  };
+   134→   134→   134→
+   135→   135→   135→  const openEdit = (cert: Certificate) => {
+   136→   136→   136→    setEditingId(cert.id);
+   137→   137→   137→    setForm({
+   138→   138→   138→      nombre_completo: cert.nombre_completo,
+   139→   139→   139→      email: cert.email,
+   140→   140→   140→      evento_id: cert.evento_id,
+   141→   141→   141→      fecha_emision: cert.fecha_emision,
+   142→   142→   142→      descripcion: cert.descripcion,
+   143→   143→   143→    });
+   144→   144→   144→    setErrors({});
+   145→   145→   145→    setModalOpen(true);
+   146→   146→   146→  };
+   147→   147→   147→
+   148→   148→   148→  const validate = () => {
+   149→   149→   149→    const e: Record<string, string> = {};
+   150→   150→   150→    if (!form.nombre_completo?.trim()) e.nombre_completo = 'Obligatorio';
+   151→   151→   151→    if (!form.email?.trim()) e.email = 'Obligatorio';
+   152→   152→   152→    else if (!/\S+@\S+\.\S+/.test(form.email)) e.email = 'Email inválido';
+   153→   153→   153→    if (!form.evento_id) e.evento_id = 'Seleccione un evento';
+   154→   154→   154→    setErrors(e);
+   155→   155→   155→    return Object.keys(e).length === 0;
+   156→   156→   156→  };
+   157→   157→   157→
+   158→   158→   158→  const handleSubmit = async (e: FormEvent) => {
+   159→   159→   159→    e.preventDefault();
+   160→   160→   160→    if (!validate()) return;
+   161→   161→   161→    try {
+   162→   162→   162→      if (editingId) {
+   163→   163→   163→        await update(editingId, form);
+   164→   164→   164→        toast('success', 'Certificado actualizado');
+   165→   165→   165→      } else {
+   166→   166→   166→        await create(form);
+   167→   167→   167→        toast('success', 'Certificado creado');
+   168→   168→   168→      }
+   169→   169→   169→      setModalOpen(false);
+   170→   170→   170→    } catch (err: unknown) {
+   171→   171→   171→      const msg =
+   172→   172→   172→        (err as { response?: { data?: { error?: string } } })?.response?.data
+   173→   173→   173→          ?.error || 'Error del servidor';
+   174→   174→   174→      toast('error', msg);
+   175→   175→   175→    }
+   176→   176→   176→  };
+   177→   177→   177→
+   178→   178→   178→  const handleDelete = async (id: number) => {
+   179→   179→   179→    if (!confirm('¿Eliminar este certificado?')) return;
+   180→   180→   180→    try {
+   181→   181→   181→      await remove(id);
+   182→   182→   182→      setSelected((s) => {
+   183→   183→   183→        const n = new Set(s);
+   184→   184→   184→        n.delete(id);
+   185→   185→   185→        return n;
+   186→   186→   186→      });
+   187→   187→   187→      toast('success', 'Certificado eliminado');
+   188→   188→   188→    } catch {
+   189→   189→   189→      toast('error', 'Error al eliminar');
+   190→   190→   190→    }
+   191→   191→   191→  };
+   192→   192→   192→
+   193→   193→   193→  const handleSend = async (id: number) => {
+   194→   194→   194→    setSending(id);
+   195→   195→   195→    try {
+   196→   196→   196→      const r = await sendSingle(id);
+   197→   197→   197→      toast(r.success ? 'success' : 'error', r.message);
+   198→   198→   198→    } catch {
+   199→   199→   199→      toast('error', 'Error al enviar');
+   200→   200→   200→    } finally {
+   201→   201→   201→      setSending(null);
+   202→   202→   202→    }
+   203→   203→   203→  };
+   204→   204→   204→
+   205→   205→   205→  const handleBulkSend = async () => {
+   206→   206→   206→    const ids = Array.from(selected);
+   207→   207→   207→    if (ids.length === 0) return;
+   208→   208→   208→    try {
+   209→   209→   209→      const r = await sendBulk(ids);
+   210→   210→   210→      toast('info', `${r.sent_count} enviados, ${r.failed_count} fallidos`);
+   211→   211→   211→      setSelected(new Set());
+   212→   212→   212→    } catch {
+   213→   213→   213→      toast('error', 'Error en envío masivo');
+   214→   214→   214→    }
+   215→   215→   215→  };
+   216→   216→   216→
+   217→   217→   217→  const toggleSelect = (id: number) =>
+   218→   218→   218→    setSelected((s) => {
+   219→   219→   219→      const n = new Set(s);
+   220→   220→   220→      n.has(id) ? n.delete(id) : n.add(id);
+   221→   221→   221→      return n;
+   222→   222→   222→    });
+   223→   223→   223→
+   224→   224→   224→  const toggleAll = () => {
+   225→   225→   225→    if (selected.size === filtered.length) setSelected(new Set());
+   226→   226→   226→    else setSelected(new Set(filtered.map((c) => c.id)));
+   227→   227→   227→  };
+   228→   228→   228→
+   229→   229→   229→  // ── Import Excel handling ──
+   230→   230→   230→  const openImportModal = () => {
+   231→   231→   231→    setImportEventId(0);
+   232→   232→   232→    setImportFecha(new Date().toISOString().split('T')[0]);
+   233→   233→   233→    setImportFile(null);
+   234→   234→   234→    setImportResult(null);
+   235→   235→   235→    setImporting(false);
+   236→   236→   236→    setImportModalOpen(true);
+   237→   237→   237→  };
+   238→   238→   238→
+   239→   239→   239→  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+   240→   240→   240→    const file = e.target.files?.[0] || null;
+   241→   241→   241→    setImportFile(file);
+   242→   242→   242→    setImportResult(null);
+   243→   243→   243→  };
+   244→   244→   244→
+   245→   245→   245→  const handleImport = async () => {
+   246→   246→   246→    if (!importEventId) {
+   247→   247→   247→      toast('error', 'Seleccione un evento');
+   248→   248→   248→      return;
+   249→   249→   249→    }
+   250→   250→   250→    if (!importFile) {
+   251→   251→   251→      toast('error', 'Seleccione un archivo Excel');
+   252→   252→   252→      return;
+   253→   253→   253→    }
+   254→   254→   254→    setImporting(true);
+   255→   255→   255→    setImportResult(null);
+   256→   256→   256→    try {
+   257→   257→   257→      const result = await certApi.importExcel(importFile, importEventId, importFecha);
+   258→   258→   258→      setImportResult({
+   259→   259→   259→        created_count: result.created_count,
+   260→   260→   260→        failed_count: result.failed_count,
+   261→   261→   261→        failed: result.failed,
+   262→   262→   262→        evento: result.evento,
+   263→   263→   263→      });
+   264→   264→   264→      fetchAll();
+   265→   265→   265→      if (result.failed_count === 0) {
+   266→   266→   266→        toast('success', `${result.created_count} certificados importados`);
+   267→   267→   267→      } else {
+   268→   268→   268→        toast('info', `${result.created_count} creados, ${result.failed_count} con errores`);
+   269→   269→   269→      }
+   270→   270→   270→    } catch (err: unknown) {
+   271→   271→   271→      const msg =
+   272→   272→   272→        (err as { response?: { data?: { error?: string } } })?.response?.data
+   273→   273→   273→          ?.error || 'Error al importar el archivo';
+   274→   274→   274→      toast('error', msg);
+   275→   275→   275→    } finally {
+   276→   276→   276→      setImporting(false);
+   277→   277→   277→    }
+   278→   278→   278→  };
+   279→   279→   279→
+   280→   280→   280→  const downloadTemplate = () => {
+   281→   281→   281→    // Genera un archivo TSV (tab-separated) que Excel abre correctamente como .xls
+   282→   282→   282→    const header = 'Nombre completo\tEmail\tFecha de emisión\tDescripción';
+   283→   283→   283→    const row1 = 'María García López\tmaria@ejemplo.com\t2026-07-12\t120 horas lectivas';
+   284→   284→   284→    const row2 = 'Juan Pérez Ruiz\tjuan@ejemplo.com\t\t';
+   285→   285→   285→    const content = header + '\n' + row1 + '\n' + row2;
+   286→   286→   286→    const blob = new Blob(['\uFEFF' + content], { type: 'text/tab-separated-values;charset=utf-8;' });
+   287→   287→   287→    const url = URL.createObjectURL(blob);
+   288→   288→   288→    const a = document.createElement('a');
+   289→   289→   289→    a.href = url;
+   290→   290→   290→    a.download = 'plantilla_participantes.xls';
+   291→   291→   291→    a.click();
+   292→   292→   292→    URL.revokeObjectURL(url);
+   293→   293→   293→  };
+   294→   294→   294→
+   295→   295→   295→  return (
+   296→   296→   296→    <div className="space-y-6">
+   297→   297→   297→      {/* Header */}
+   298→   298→   298→      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+   299→   299→   299→        <div>
+   300→   300→   300→          <h1 className="text-2xl font-bold text-slate-900">Certificados</h1>
+   301→   301→   301→          <p className="text-slate-500 text-sm mt-0.5">
+   302→   302→   302→            {certificates.length} certificados en total
+   303→   303→   303→          </p>
+   304→   304→   304→        </div>
+   305→   305→   305→        <div className="flex items-center gap-2">
+   306→   306→   306→          {selected.size > 0 && (
+   307→   307→   307→            <Button
+   308→   308→   308→              variant="primary"
+   309→   309→   309→              icon={<Mail size={16} />}
+   310→   310→   310→              onClick={handleBulkSend}
+   311→   311→   311→            >
+   312→   312→   312→              Enviar ({selected.size})
+   313→   313→   313→            </Button>
+   314→   314→   314→          )}
+   315→   315→   315→          {isAdmin && (
+   316→   316→   316→            <>
+   317→   317→   317→              <Button
+   318→   318→   318→                variant="outline"
+   319→   319→   319→                icon={<FileSpreadsheet size={16} />}
+   320→   320→   320→                onClick={openImportModal}
+   321→   321→   321→              >
+   322→   322→   322→                Importar Excel
+   323→   323→   323→              </Button>
+   324→   324→   324→              <Button
+   325→   325→   325→                variant="primary"
+   326→   326→   326→                icon={<Plus size={16} />}
+   327→   327→   327→                onClick={openCreate}
+   328→   328→   328→              >
+   329→   329→   329→                Nuevo certificado
+   330→   330→   330→              </Button>
+   331→   331→   331→            </>
+   332→   332→   332→          )}
+   333→   333→   333→        </div>
+   334→   334→   334→      </div>
+   335→   335→   335→
+   336→   336→   336→      {/* Toolbar */}
+   337→   337→   337→      <div className="bg-white rounded-2xl border border-slate-100 p-4 flex flex-col sm:flex-row gap-3">
+   338→   338→   338→        <div className="relative flex-1">
+   339→   339→   339→          <Search
+   340→   340→   340→            size={16}
+   341→   341→   341→            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+   342→   342→   342→          />
+   343→   343→   343→          <input
+   344→   344→   344→            type="text"
+   345→   345→   345→            placeholder="Buscar por nombre, email, evento o código..."
+   346→   346→   346→            value={search}
+   347→   347→   347→            onChange={(e) => setSearch(e.target.value)}
+   348→   348→   348→            className="w-full pl-9 pr-4 py-2.5 rounded-lg border border-slate-200 text-sm
+   349→   349→   349→              focus:outline-none focus:ring-2 focus:ring-primary-500/30 focus:border-primary-500"
+   350→   350→   350→          />
+   351→   351→   351→        </div>
+   352→   352→   352→        <Select
+   353→   353→   353→          options={filterEventOptions}
+   354→   354→   354→          value={filterEvent}
+   355→   355→   355→          onChange={(e) => setFilterEvent(e.target.value)}
+   356→   356→   356→          className="sm:w-52"
+   357→   357→   357→        />
+   358→   358→   358→        <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+   359→   359→   359→          {(['all', 'pending', 'sent'] as const).map((f) => (
+   360→   360→   360→            <button
+   361→   361→   361→              key={f}
+   362→   362→   362→              onClick={() => setFilterStatus(f)}
+   363→   363→   363→              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer
+   364→   364→   364→                ${
+   365→   365→   365→                  filterStatus === f
+   366→   366→   366→                    ? 'bg-white text-slate-900 shadow-sm'
+   367→   367→   367→                    : 'text-slate-500 hover:text-slate-700'
+   368→   368→   368→                }`}
+   369→   369→   369→            >
+   370→   370→   370→              {f === 'all' ? 'Todos' : f === 'sent' ? 'Enviados' : 'Pendientes'}
+   371→   371→   371→            </button>
+   372→   372→   372→          ))}
+   373→   373→   373→        </div>
+   374→   374→   374→      </div>
+   375→   375→   375→
+   376→   376→   376→      {/* Table */}
+   377→   377→   377→      <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+   378→   378→   378→        {loading ? (
+   379→   379→   379→          <div className="p-12 text-center text-slate-400 text-sm">
+   380→   380→   380→            <div className="animate-spin h-6 w-6 border-2 border-primary-500 border-t-transparent rounded-full mx-auto mb-3" />
+   381→   381→   381→            Cargando certificados...
+   382→   382→   382→          </div>
+   383→   383→   383→        ) : filtered.length === 0 ? (
+   384→   384→   384→          <div className="p-12 text-center">
+   385→   385→   385→            <FileCheck size={40} className="mx-auto text-slate-200 mb-3" />
+   386→   386→   386→            <p className="text-slate-500 text-sm">
+   387→   387→   387→              {search || filterStatus !== 'all'
+   388→   388→   388→                ? 'No se encontraron resultados'
+   389→   389→   389→                : 'No hay certificados. Crea el primero.'}
+   390→   390→   390→            </p>
+   391→   391→   391→          </div>
+   392→   392→   392→        ) : (
+   393→   393→   393→          <div className="overflow-x-auto">
+   394→   394→   394→            <table className="w-full text-sm">
+   395→   395→   395→              <thead>
+   396→   396→   396→                <tr className="border-b border-slate-100 bg-slate-50/50">
+   397→   397→   397→                  <th className="w-10 px-4 py-3">
+   398→   398→   398→                    <input
+   399→   399→   399→                      type="checkbox"
+   400→   400→   400→                      checked={selected.size === filtered.length && filtered.length > 0}
+   401→   401→   401→                      onChange={toggleAll}
+   402→   402→   402→                      className="rounded border-slate-300"
+   403→   403→   403→                    />
+   404→   404→   404→                  </th>
+   405→   405→   405→                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+   406→   406→   406→                    Nombre
+   407→   407→   407→                  </th>
+   408→   408→   408→                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide hidden md:table-cell">
+   409→   409→   409→                    Email
+   410→   410→   410→                  </th>
+   411→   411→   411→                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide hidden lg:table-cell">
+   412→   412→   412→                    Evento
+   413→   413→   413→                  </th>
+   414→   414→   414→                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide hidden sm:table-cell">
+   415→   415→   415→                    Fecha
+   416→   416→   416→                  </th>
+   417→   417→   417→                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+   418→   418→   418→                    Estado
+   419→   419→   419→                  </th>
+   420→   420→   420→                  <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">
+   421→   421→   421→                    Acciones
+   422→   422→   422→                  </th>
+   423→   423→   423→                </tr>
+   424→   424→   424→              </thead>
+   425→   425→   425→              <tbody className="divide-y divide-slate-50">
+   426→   426→   426→                {filtered.map((cert) => (
+   427→   427→   427→                  <tr
+   428→   428→   428→                    key={cert.id}
+   429→   429→   429→                    className="hover:bg-slate-50/50 transition-colors"
+   430→   430→   430→                  >
+   431→   431→   431→                    <td className="px-4 py-3">
+   432→   432→   432→                      <input
+   433→   433→   433→                        type="checkbox"
+   434→   434→   434→                        checked={selected.has(cert.id)}
+   435→   435→   435→                        onChange={() => toggleSelect(cert.id)}
+   436→   436→   436→                        className="rounded border-slate-300"
+   437→   437→   437→                      />
+   438→   438→   438→                    </td>
+   439→   439→   439→                    <td className="px-4 py-3">
+   440→   440→   440→                      <div>
+   441→   441→   441→                        <p className="font-medium text-slate-900">{cert.nombre_completo}</p>
+   442→   442→   442→                        <p className="text-xs text-slate-400 md:hidden">{cert.email}</p>
+   443→   443→   443→                      </div>
+   444→   444→   444→                    </td>
+   445→   445→   445→                    <td className="px-4 py-3 text-slate-600 hidden md:table-cell">
+   446→   446→   446→                      {cert.email}
+   447→   447→   447→                    </td>
+   448→   448→   448→                    <td className="px-4 py-3 text-slate-600 hidden lg:table-cell max-w-[200px] truncate">
+   449→   449→   449→                      {getEventName(cert.evento_id)}
+   450→   450→   450→                    </td>
+   451→   451→   451→                    <td className="px-4 py-3 text-slate-500 hidden sm:table-cell">
+   452→   452→   452→                      {cert.fecha_emision}
+   453→   453→   453→                    </td>
+   454→   454→   454→                    <td className="px-4 py-3">
+   455→   455→   455→                      <span
+   456→   456→   456→                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
+   457→   457→   457→                        ${cert.enviado ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}
+   458→   458→   458→                      >
+   459→   459→   459→                        <span
+   460→   460→   460→                          className={`w-1.5 h-1.5 rounded-full ${cert.enviado ? 'bg-emerald-500' : 'bg-amber-500'}`}
+   461→   461→   461→                        />
+   462→   462→   462→                        {cert.enviado ? 'Enviado' : 'Pendiente'}
+   463→   463→   463→                      </span>
+   464→   464→   464→                    </td>
+   465→   465→   465→                    <td className="px-4 py-3">
+   466→   466→   466→                      <div className="flex items-center justify-end gap-1">
+   467→   467→   467→                        {!cert.enviado && (
+   468→   468→   468→                          <button
+   469→   469→   469→                            onClick={() => handleSend(cert.id)}
+   470→   470→   470→                            disabled={sending === cert.id}
+   471→   471→   471→                            title="Enviar por email"
+   472→   472→   472→                            className="p-1.5 rounded-lg text-slate-400 hover:text-primary-600 hover:bg-primary-50 transition-colors cursor-pointer"
+   473→   473→   473→                          >
+   474→   474→   474→                            <Send size={15} />
+   475→   475→   475→                          </button>
+   476→   476→   476→                        )}
+   477→   477→   477→                        {isAdmin && (
+   478→   478→   478→                          <>
+   479→   479→   479→                            <button
+   480→   480→   480→                              onClick={() => openEdit(cert)}
+   481→   481→   481→                              title="Editar"
+   482→   482→   482→                              className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"
+   483→   483→   483→                            >
+   484→   484→   484→                              <Pencil size={15} />
+   485→   485→   485→                            </button>
+   486→   486→   486→                            <button
+   487→   487→   487→                              onClick={() => handleDelete(cert.id)}
+   488→   488→   488→                              title="Eliminar"
+   489→   489→   489→                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+   490→   490→   490→                            >
+   491→   491→   491→                              <Trash2 size={15} />
+   492→   492→   492→                            </button>
+   493→   493→   493→                          </>
+   494→   494→   494→                        )}
+   495→   495→   495→                      </div>
+   496→   496→   496→                    </td>
+   497→   497→   497→                  </tr>
+   498→   498→   498→                ))}
+   499→   499→   499→              </tbody>
+   500→   500→   500→            </table>
+   501→   501→   501→          </div>
+   502→   502→   502→        )}
+   503→   503→   503→
+   504→   504→   504→        {filtered.length > 0 && (
+   505→   505→   505→          <div className="px-4 py-3 border-t border-slate-100 text-xs text-slate-400">
+   506→   506→   506→            Mostrando {filtered.length} de {certificates.length} certificados
+   507→   507→   507→          </div>
+   508→   508→   508→        )}
+   509→   509→   509→      </div>
+   510→   510→   510→
+   511→   511→   511→      {/* ═══ Create / Edit Modal (2 columns) ═══ */}
+   512→   512→   512→      <Modal
+   513→   513→   513→        open={modalOpen}
+   514→   514→   514→        onClose={() => setModalOpen(false)}
+   515→   515→   515→        title={editingId ? 'Editar Certificado' : 'Nuevo Certificado'}
+   516→   516→   516→      >
+   517→   517→   517→        <form onSubmit={handleSubmit} className="space-y-4">
+   518→   518→   518→          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+   519→   519→   519→            <Input
+   520→   520→   520→              label="Nombre completo"
+   521→   521→   521→              value={form.nombre_completo || ''}
+   522→   522→   522→              error={errors.nombre_completo}
+   523→   523→   523→              onChange={(e) =>
+   524→   524→   524→                setForm({ ...form, nombre_completo: e.target.value })
+   525→   525→   525→              }
+   526→   526→   526→              placeholder="María García López"
+   527→   527→   527→            />
+   528→   528→   528→            <Input
+   529→   529→   529→              label="Email del destinatario"
+   530→   530→   530→              type="email"
+   531→   531→   531→              value={form.email || ''}
+   532→   532→   532→              error={errors.email}
+   533→   533→   533→              onChange={(e) => setForm({ ...form, email: e.target.value })}
+   534→   534→   534→              placeholder="maria@ejemplo.com"
+   535→   535→   535→            />
+   536→   536→   536→            {eventOptions.length === 0 ? (
+   537→   537→   537→              <div className="sm:col-span-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+   538→   538→   538→                No hay eventos creados. Ve a{' '}
+   539→   539→   539→                <a href="/events" className="font-semibold underline hover:text-amber-900">
+   540→   540→   540→                  Eventos
+   541→   541→   541→                </a>{' '}
+   542→   542→   542→                y crea uno antes de generar certificados.
+   543→   543→   543→              </div>
+   544→   544→   544→            ) : (
+   545→   545→   545→              <Select
+   546→   546→   546→                label="Evento"
+   547→   547→   547→                options={eventOptions}
+   548→   548→   548→                value={form.evento_id ? String(form.evento_id) : ''}
+   549→   549→   549→                onChange={(e) =>
+   550→   550→   550→                  setForm({ ...form, evento_id: Number(e.target.value) })
+   551→   551→   551→                }
+   552→   552→   552→                error={errors.evento_id}
+   553→   553→   553→                placeholder="Seleccionar evento"
+   554→   554→   554→              />
+   555→   555→   555→            )}
+   556→   556→   556→            <Input
+   557→   557→   557→              label="Fecha de emisión"
+   558→   558→   558→              type="date"
+   559→   559→   559→              value={form.fecha_emision || ''}
+   560→   560→   560→              onChange={(e) =>
+   561→   561→   561→                setForm({ ...form, fecha_emision: e.target.value })
+   562→   562→   562→              }
+   563→   563→   563→            />
+   564→   564→   564→          </div>
+   565→   565→   565→          <Textarea
+   566→   566→   566→            label="Descripción (opcional)"
+   567→   567→   567→            value={form.descripcion || ''}
+   568→   568→   568→            onChange={(e) =>
+   569→   569→   569→              setForm({ ...form, descripcion: e.target.value })
+   570→   570→   570→            }
+   571→   571→   571→            placeholder="120 horas lectivas, nota sobresaliente..."
+   572→   572→   572→          />
+   573→   573→   573→          <div className="flex justify-end gap-2 pt-2">
+   574→   574→   574→            <Button
+   575→   575→   575→              type="button"
+   576→   576→   576→              variant="ghost"
+   577→   577→   577→              onClick={() => setModalOpen(false)}
+   578→   578→   578→            >
+   579→   579→   579→              Cancelar
+   580→   580→   580→            </Button>
+   581→   581→   581→            <Button type="submit">
+   582→   582→   582→              {editingId ? 'Guardar cambios' : 'Crear certificado'}
+   583→   583→   583→            </Button>
+   584→   584→   584→          </div>
+   585→   585→   585→        </form>
+   586→   586→   586→      </Modal>
+   587→   587→   587→
+   588→   588→   588→      {/* ═══ Import Excel Modal ═══ */}
+   589→   589→   589→      <Modal
+   590→   590→   590→        open={importModalOpen}
+   591→   591→   591→        onClose={() => setImportModalOpen(false)}
+   592→   592→   592→        title="Importar Participantes desde Excel"
+   593→   593→   593→        maxWidth="max-w-2xl"
+   594→   594→   594→      >
+   595→   595→   595→        <div className="space-y-5">
+   596→   596→   596→          {/* Info banner */}
+   597→   597→   597→          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
+   598→   598→   598→            <p className="font-medium mb-1">Formato del archivo requerido (.xlsx):</p>
+   599→   599→   599→            <p className="text-blue-600">
+   600→   600→   600→              Columna A: <strong>Nombre completo</strong> | Columna B: <strong>Email</strong> | Columna C: Fecha (opcional) | Columna D: Descripción (opcional)
+   601→   601→   601→            </p>
+   602→   602→   602→            <button
+   603→   603→   603→              type="button"
+   604→   604→   604→              onClick={downloadTemplate}
+   605→   605→   605→              className="mt-2 text-xs font-semibold text-blue-700 underline hover:text-blue-900 cursor-pointer"
+   606→   606→   606→            >
+   607→   607→   607→              Descargar plantilla de ejemplo
+   608→   608→   608→            </button>
+   609→   609→   609→          </div>
+   610→   610→   610→
+   611→   611→   611→          {/* Form: 2 columns */}
+   612→   612→   612→          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+   613→   613→   613→            <Select
+   614→   614→   614→              label="Evento"
+   615→   615→   615→              options={eventOptions}
+   616→   616→   616→              value={importEventId ? String(importEventId) : ''}
+   617→   617→   617→              onChange={(e) => {
+   618→   618→   618→                setImportEventId(Number(e.target.value));
+   619→   619→   619→                setImportResult(null);
+   620→   620→   620→              }}
+   621→   621→   621→              placeholder="Seleccionar evento"
+   622→   622→   622→            />
+   623→   623→   623→            <Input
+   624→   624→   624→              label="Fecha de emisión (para filas sin fecha)"
+   625→   625→   625→              type="date"
+   626→   626→   626→              value={importFecha}
+   627→   627→   627→              onChange={(e) => setImportFecha(e.target.value)}
+   628→   628→   628→            />
+   629→   629→   629→          </div>
+   630→   630→   630→
+   631→   631→   631→          {/* File upload */}
+   632→   632→   632→          <div>
+   633→   633→   633→            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+   634→   634→   634→              Archivo Excel
+   635→   635→   635→            </label>
+   636→   636→   636→            <div
+   637→   637→   637→              onClick={() => fileInputRef.current?.click()}
+   638→   638→   638→              className={`relative border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors
+   639→   639→   639→                ${importFile
+   640→   640→   640→                  ? 'border-emerald-300 bg-emerald-50/50 hover:border-emerald-400'
+   641→   641→   641→                  : 'border-slate-200 bg-slate-50/50 hover:border-primary-400 hover:bg-primary-50/30'
+   642→   642→   642→                }`}
+   643→   643→   643→            >
+   644→   644→   644→              <input
+   645→   645→   645→                ref={fileInputRef}
+   646→   646→   646→                type="file"
+   647→   647→   647→                accept=".xlsx,.xls,.csv"
+   648→   648→   648→                onChange={handleFileChange}
+   649→   649→   649→                className="hidden"
+   650→   650→   650→              />
+   651→   651→   651→              {importFile ? (
+   652→   652→   652→                <div className="flex items-center justify-center gap-3">
+   653→   653→   653→                  <FileSpreadsheet size={24} className="text-emerald-600" />
+   654→   654→   654→                  <div className="text-left">
+   655→   655→   655→                    <p className="text-sm font-medium text-slate-900">{importFile.name}</p>
+   656→   656→   656→                    <p className="text-xs text-slate-500">
+   657→   657→   657→                      {(importFile.size / 1024).toFixed(1)} KB
+   658→   658→   658→                    </p>
+   659→   659→   659→                  </div>
+   660→   660→   660→                  <button
+   661→   661→   661→                    type="button"
+   662→   662→   662→                    onClick={(e) => {
+   663→   663→   663→                      e.stopPropagation();
+   664→   664→   664→                      setImportFile(null);
+   665→   665→   665→                      setImportResult(null);
+   666→   666→   666→                      if (fileInputRef.current) fileInputRef.current.value = '';
+   667→   667→   667→                    }}
+   668→   668→   668→                    className="p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors cursor-pointer"
+   669→   669→   669→                  >
+   670→   670→   670→                    <X size={16} />
+   671→   671→   671→                  </button>
+   672→   672→   672→                </div>
+   673→   673→   673→              ) : (
+   674→   674→   674→                <>
+   675→   675→   675→                  <Upload size={28} className="mx-auto text-slate-300 mb-2" />
+   676→   676→   676→                  <p className="text-sm text-slate-500">
+   677→   677→   677→                    Haz clic para seleccionar un archivo
+   678→   678→   678→                  </p>
+   679→   679→   679→                  <p className="text-xs text-slate-400 mt-1">.xlsx (recomendado) o .csv</p>
+   680→   680→   680→                </>
+   681→   681→   681→              )}
+   682→   682→   682→            </div>
+   683→   683→   683→          </div>
+   684→   684→   684→
+   685→   685→   685→          {/* Actions */}
+   686→   686→   686→          <div className="flex items-center justify-between pt-1">
+   687→   687→   687→            <Button
+   688→   688→   688→              type="button"
+   689→   689→   689→              variant="ghost"
+   690→   690→   690→              onClick={() => setImportModalOpen(false)}
+   691→   691→   691→            >
+   692→   692→   692→              Cancelar
+   693→   693→   693→            </Button>
+   694→   694→   694→            <Button
+   695→   695→   695→              onClick={handleImport}
+   696→   696→   696→              loading={importing}
+   697→   697→   697→              disabled={!importEventId || !importFile}
+   698→   698→   698→              icon={<Upload size={16} />}
+   699→   699→   699→            >
+   700→   700→   700→              {importing ? 'Importando...' : 'Importar participantes'}
+   701→   701→   701→            </Button>
+   702→   702→   702→          </div>
+   703→   703→   703→
+   704→   704→   704→          {/* Results */}
+   705→   705→   705→          {importResult && (
+   706→   706→   706→            <div className="border border-slate-200 rounded-xl overflow-hidden">
+   707→   707→   707→              {/* Summary bar */}
+   708→   708→   708→              <div className="flex items-center gap-4 px-4 py-3 bg-slate-50 border-b border-slate-200">
+   709→   709→   709→                <div className="flex items-center gap-1.5 text-sm">
+   710→   710→   710→                  <CheckCircle2 size={16} className="text-emerald-500" />
+   711→   711→   711→                  <span className="font-medium text-emerald-700">
+   712→   712→   712→                    {importResult.created_count} creados
+   713→   713→   713→                  </span>
+   714→   714→   714→                </div>
+   715→   715→   715→                {importResult.failed_count > 0 && (
+   716→   716→   716→                  <div className="flex items-center gap-1.5 text-sm">
+   717→   717→   717→                    <AlertCircle size={16} className="text-red-500" />
+   718→   718→   718→                    <span className="font-medium text-red-600">
+   719→   719→   719→                      {importResult.failed_count} con error
+   720→   720→   720→                    </span>
+   721→   721→   721→                  </div>
+   722→   722→   722→                )}
+   723→   723→   723→                <span className="ml-auto text-xs text-slate-400">
+   724→   724→   724→                  Evento: {importResult.evento}
+   725→   725→   725→                </span>
+   726→   726→   726→              </div>
+   727→   727→   727→
+   728→   728→   728→              {/* Failed rows */}
+   729→   729→   729→              {importResult.failed.length > 0 && (
+   730→   730→   730→                <div className="max-h-48 overflow-y-auto">
+   731→   731→   731→                  <table className="w-full text-sm">
+   732→   732→   732→                    <thead>
+   733→   733→   733→                      <tr className="bg-red-50/50">
+   734→   734→   734→                        <th className="text-left px-4 py-2 text-xs font-semibold text-red-600 uppercase">
+   735→   735→   735→                          Fila
+   736→   736→   736→                        </th>
+   737→   737→   737→                        <th className="text-left px-4 py-2 text-xs font-semibold text-red-600 uppercase">
+   738→   738→   738→                          Error
+   739→   739→   739→                        </th>
+   740→   740→   740→                      </tr>
+   741→   741→   741→                    </thead>
+   742→   742→   742→                    <tbody className="divide-y divide-red-50">
+   743→   743→   743→                      {importResult.failed.map((f, i) => (
+   744→   744→   744→                        <tr key={i} className="hover:bg-red-50/30">
+   745→   745→   745→                          <td className="px-4 py-2 text-slate-600 font-mono text-xs">
+   746→   746→   746→                            #{f.row}
+   747→   747→   747→                          </td>
+   748→   748→   748→                          <td className="px-4 py-2 text-red-600 text-xs">
+   749→   749→   749→                            {f.reason}
+   750→   750→   750→                          </td>
+   751→   751→   751→                        </tr>
+   752→   752→   752→                      ))}
+   753→   753→   753→                    </tbody>
+   754→   754→   754→                  </table>
+   755→   755→   755→                </div>
+   756→   756→   756→              )}
+   757→   757→   757→            </div>
+   758→   758→   758→          )}
+   759→   759→   759→        </div>
+   760→   760→   760→      </Modal>
+   761→   761→   761→    </div>
+   762→   762→   762→  );
+   763→   763→   763→}

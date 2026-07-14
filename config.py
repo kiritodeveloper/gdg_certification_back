@@ -28,6 +28,9 @@ class Config:
     EMAIL_SMTP_SERVER = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
     EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", 587))
 
+    # ── URL pública (para links de activación en emails) ──
+    BASE_URL = os.getenv("BASE_URL", "https://tu-dominio.com")
+
     # ── Archivos ───────────────────────────────────────
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "certs")
     ALLOWED_EXTENSIONS = {"pdf"}

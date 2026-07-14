@@ -374,7 +374,7 @@ class GoogleSheetsDB:
         for row in records[1:]:
             if row[0] == str(cert_id):
                 c = self._row_to_dict(self._CERT_HEADERS, row)
-                c["enviado"] = c.get("enviado", "False") == "True"
+                c["enviado"] = str(c.get("enviado", "False")).strip().lower() == "true"
                 c["id"] = self._safe_int(c["id"])
                 c["evento_id"] = self._safe_int(c.get("evento_id", 0))
                 return c
@@ -389,7 +389,7 @@ class GoogleSheetsDB:
         for row in records[1:]:
             if len(row) > code_index and row[code_index] == code:
                 c = self._row_to_dict(self._CERT_HEADERS, row)
-                c["enviado"] = c.get("enviado", "False") == "True"
+                c["enviado"] = str(c.get("enviado", "False")).strip().lower() == "true"
                 c["id"] = self._safe_int(c["id"])
                 c["evento_id"] = self._safe_int(c.get("evento_id", 0))
                 return c
@@ -403,7 +403,7 @@ class GoogleSheetsDB:
         certs = []
         for row in records[1:]:
             c = self._row_to_dict(self._CERT_HEADERS, row)
-            c["enviado"] = c.get("enviado", "False") == "True"
+            c["enviado"] = str(c.get("enviado", "False")).strip().lower() == "true"
             c["id"] = self._safe_int(c["id"])
             c["evento_id"] = self._safe_int(c.get("evento_id", 0))
             certs.append(c)
@@ -415,7 +415,7 @@ class GoogleSheetsDB:
             self.certs_sheet, self._CERT_HEADERS, "creado_por", creado_por
         )
         for c in results:
-            c["enviado"] = c.get("enviado", "False") == "True"
+            c["enviado"] = str(c.get("enviado", "False")).strip().lower() == "true"
             c["id"] = self._safe_int(c["id"])
             c["evento_id"] = self._safe_int(c.get("evento_id", 0))
         return results
@@ -426,7 +426,7 @@ class GoogleSheetsDB:
             self.certs_sheet, self._CERT_HEADERS, "evento_id", evento_id
         )
         for c in results:
-            c["enviado"] = c.get("enviado", "False") == "True"
+            c["enviado"] = str(c.get("enviado", "False")).strip().lower() == "true"
             c["id"] = self._safe_int(c["id"])
             c["evento_id"] = self._safe_int(c.get("evento_id", 0))
         return results

@@ -1,11 +1,8 @@
 """
 Servicio de generación de certificados en PDF y envío por email.
 
-El PDF se genera en horizontal (landscape) con:
-- Borde decorativo con colores del evento
-- Código QR con link de verificación
-- Firmas de speakers del evento
-- Diseño profesional similar a certificados modernos
+El PDF se genera en horizontal (landscape) usando una plantilla PNG como fondo.
+Solo se superpone el nombre del participante y las firmas de speakers.
 """
 
 import os
@@ -22,11 +19,18 @@ import qrcode
 from models.google_sheets import db
 from utils.email_sender import (
     send_email_with_attachment,
-    build_certificate_email_body,
+    build_activation_email_body,
 )
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+# ── Ruta a la plantilla de fondo ────────────────────────
+_TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "assets",
+    "plantilla_certificado.png",
+)
 
 
 def create_certificate(
@@ -70,257 +74,139 @@ def _parse_base64_image(b64_string: str) -> bytes | None:
         return None
 
 
+def _draw_background_image(c: canvas.Canvas, width: float, height: float,
+                           template_path: str):
+    """Dibuja la imagen de plantilla escalada a toda la página."""
+    if not os.path.isfile(template_path):
+        logger.warning(f"Plantilla no encontrada: {template_path}, usando fondo blanco")
+        c.setFillColor(white)
+        c.rect(0, 0, width, height, fill=1, stroke=0)
+        return
+
+    from PIL import Image as PILImage
+
+    img = PILImage.open(template_path)
+    img_w, img_h = img.size  # píxeles originales
+
+    # Calcular escala para cubrir toda la página (cover)
+    scale_x = width / img_w
+    scale_y = height / img_h
+    scale = max(scale_x, scale_y)
+
+    draw_w = img_w * scale
+    draw_h = img_h * scale
+
+    # Centrar si sobra espacio
+    x_offset = (width - draw_w) / 2
+    y_offset = (height - draw_h) / 2
+
+    c.drawImage(
+        ImageReader(template_path),
+        x_offset, y_offset,
+        width=draw_w, height=draw_h,
+        preserveAspectRatio=False,
+    )
+
+
 def generate_certificate_pdf(certificado: dict) -> str:
     """
-    Genera un PDF de certificado horizontal profesional.
+    Genera un PDF de certificado usando la plantilla PNG como fondo.
 
-    Incluye: borde decorativo con colores del evento, QR de verificación,
-    firmas de speakers, nombre del participante, nombre del evento.
+    Solo se superponen:
+    - Nombre del participante (centrado, en el área 'Otorgado a:')
+    - Código QR pequeño (esquina inferior derecha)
     """
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-
-    # Obtener datos del evento y speakers
-    evento = db.get_event_by_id(certificado["evento_id"]) if certificado.get("evento_id") else None
-    speakers = []
-    if evento:
-        speakers = db.get_speakers_by_event(certificado["evento_id"])
-
-    # Colores del evento o defaults
-    color_primary = evento.get("color_primario", "#1a73e8") if evento else "#1a73e8"
-    color_secondary = evento.get("color_secundario", "#c8a45a") if evento else "#c8a45a"
-    nombre_evento = evento.get("nombre", "Evento") if evento else "Evento"
-
-    prim = HexColor(color_primary)
-    sec = HexColor(color_secondary)
-    prim_light = Color(
-        prim.red * 0.15 + 0.85,
-        prim.green * 0.15 + 0.85,
-        prim.blue * 0.15 + 0.85,
-    )
 
     filename = f"certificado_{certificado['id']}_{certificado['nombre_completo'].replace(' ', '_')}.pdf"
     filepath = os.path.join(Config.UPLOAD_FOLDER, filename)
 
-    width, height = landscape(letter)
+    width, height = landscape(letter)  # 792 x 567 puntos
     c = canvas.Canvas(filepath, pagesize=landscape(letter))
 
-    # ── Fondo blanco ────────────────────────────────────
-    c.setFillColor(white)
-    c.rect(0, 0, width, height, fill=1, stroke=0)
+    # ── 1. Fondo: imagen de plantilla a página completa ──
+    _draw_background_image(c, width, height, _TEMPLATE_PATH)
 
-    # ── Borde decorativo exterior grueso ────────────────
-    c.setStrokeColor(prim)
-    c.setLineWidth(6)
-    c.roundRect(18, 18, width - 36, height - 36, 12, fill=0, stroke=1)
+    # ── 2. Nombre del participante ───────────────────────
+    # Línea dorada está al 34.5% desde arriba → nombre al ~36.5%
+    # En PDF coords: 1 - 0.365 = 0.635 desde abajo
+    nombre = certificado["nombre_completo"].upper()
 
-    # ── Borde interior dorado ───────────────────────────
-    c.setStrokeColor(sec)
-    c.setLineWidth(1.5)
-    c.roundRect(28, 28, width - 56, height - 56, 8, fill=0, stroke=1)
+    # Ajustar tamaño de fuente si el nombre es muy largo
+    font_size = 24
+    name_w = c.stringWidth(nombre, "Helvetica-Bold", font_size)
+    max_name_width = width * 0.55
+    if name_w > max_name_width:
+        ratio = max_name_width / name_w
+        font_size = max(14, int(font_size * ratio))
+        name_w = c.stringWidth(nombre, "Helvetica-Bold", font_size)
 
-    # ── Esquinas decorativas ────────────────────────────
-    corner_len = 35
-    c.setStrokeColor(prim)
-    c.setLineWidth(4)
-    corners = [
-        (30, height - 30, 30 + corner_len, height - 30, 30, height - 30 - corner_len),
-        (width - 30, height - 30, width - 30 - corner_len, height - 30, width - 30, height - 30 - corner_len),
-        (30, 30, 30 + corner_len, 30, 30, 30 + corner_len),
-        (width - 30, 30, width - 30 - corner_len, 30, width - 30, 30 + corner_len),
-    ]
-    for cx, cy, x1, y1, x2, y2 in corners:
-        c.line(cx, cy, x1, y1)
-        c.line(cx, cy, x2, y2)
+    name_y = height * 0.535  # 5% más de margen top adicional
+    name_x = width / 2
 
-    # ── Línea decorativa multicolor bajo título ─────────
-    colors_bar = [
-        HexColor("#e74c3c"), HexColor("#e67e22"), HexColor("#f1c40f"),
-        HexColor("#2ecc71"), HexColor("#3498db"), HexColor("#9b59b6"),
-    ]
-    bar_y = height - 120
-    bar_width = 300
-    bar_start = (width - bar_width) / 2
-    seg = bar_width / len(colors_bar)
-    for i, col in enumerate(colors_bar):
-        c.setFillColor(col)
-        c.rect(bar_start + i * seg, bar_y, seg + 1, 3, fill=1, stroke=0)
+    c.setFillColor(HexColor("#1a1a1a"))
+    c.setFont("Helvetica-Bold", font_size)
+    c.drawCentredString(name_x, name_y, nombre)
 
-    # ── Título CERTIFICADO ─────────────────────────────
-    c.setFillColor(prim)
-    c.setFont("Helvetica-Bold", 32)
-    c.drawCentredString(width / 2, height - 85, "CERTIFICADO DE PARTICIPACION")
 
-    # ── "Se certifica que" ─────────────────────────────
-    c.setFillColor(HexColor("#555555"))
-    c.setFont("Helvetica", 13)
-    c.drawCentredString(width / 2, height - 150, "Se certifica que")
 
-    # ── Nombre del participante ────────────────────────
-    c.setFillColor(prim)
-    c.setFont("Helvetica-Bold", 28)
-    c.drawCentredString(width / 2, height - 195, certificado["nombre_completo"])
-
-    # ── Línea bajo nombre ──────────────────────────────
-    name_w = c.stringWidth(certificado["nombre_completo"], "Helvetica-Bold", 28)
-    c.setStrokeColor(sec)
-    c.setLineWidth(1.5)
-    c.line(width / 2 - name_w / 2 - 15, height - 205,
-           width / 2 + name_w / 2 + 15, height - 205)
-
-    # ── "ha participado en el evento" ──────────────────
-    c.setFillColor(HexColor("#555555"))
-    c.setFont("Helvetica", 13)
-    c.drawCentredString(width / 2, height - 235, "ha participado exitosamente en el evento:")
-
-    # ── Nombre del evento ──────────────────────────────
-    c.setFillColor(prim)
-    c.setFont("Helvetica-Bold", 20)
-    c.drawCentredString(width / 2, height - 270, nombre_evento)
-
-    # ── Descripción si existe ──────────────────────────
-    desc_y = height - 295
-    if certificado.get("descripcion"):
-        c.setFillColor(HexColor("#666666"))
-        c.setFont("Helvetica", 12)
-        c.drawCentredString(width / 2, desc_y, certificado["descripcion"])
-        desc_y -= 20
-
-    # ── Fecha ──────────────────────────────────────────
-    c.setFillColor(HexColor("#666666"))
-    c.setFont("Helvetica", 11)
-    c.drawCentredString(width / 2, desc_y - 5,
-        f"Fecha de emision: {certificado['fecha_emision']}")
-
-    # ══════════════════════════════════════════════════
-    #  SECCIÓN INFERIOR: QR + Firmas
-    # ══════════════════════════════════════════════════
-    bottom_section_y = 70
-
-    # ── Generar QR ──────────────────────────────────────
+    # ═══════════════════════════════════════════════════
+    #  4. QR pequeño (esquina inferior derecha)
+    # ═══════════════════════════════════════════════════
     verify_url = f"https://tu-dominio.com/verify/{certificado['codigo_verif']}"
     qr_png = _generate_qr_base64(verify_url)
-    qr_path = os.path.join(Config.UPLOAD_FOLDER, f"_qr_{certificado['id']}.png")
-    with open(qr_path, "wb") as f:
-        f.write(qr_png)
+    qr_size = 55
+    qr_x = width - qr_size - 30
+    qr_y = 30
 
-    # Dibujar QR centrado o a la izquierda
-    if speakers:
-        # QR a la izquierda
-        qr_x = 80
-        qr_y = bottom_section_y + 10
-        qr_size = 80
-        c.drawImage(ImageReader(io.BytesIO(qr_png)),
-                     qr_x, qr_y, width=qr_size, height=qr_size)
-        c.setFillColor(HexColor("#888888"))
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(qr_x + qr_size / 2, qr_y - 12,
-                            "Escanea para verificar")
-        c.drawCentredString(qr_x + qr_size / 2, qr_y - 22,
-                            certificado["codigo_verif"])
+    c.drawImage(
+        ImageReader(io.BytesIO(qr_png)),
+        qr_x, qr_y, width=qr_size, height=qr_size,
+    )
+    c.setFillColor(HexColor("#888888"))
+    c.setFont("Helvetica", 6)
+    c.drawCentredString(qr_x + qr_size / 2, qr_y - 9,
+                        certificado["codigo_verif"])
 
-        # ── Firmas de speakers ─────────────────────────
-        sig_start_x = 220
-        available_width = width - sig_start_x - 60
-        n_speakers = len(speakers)
-        if n_speakers > 0:
-            slot_width = available_width / n_speakers
-            for idx, sp in enumerate(speakers):
-                sx = sig_start_x + (slot_width * idx) + slot_width / 2
-
-                # Firma imagen si existe
-                firma_data = sp.get("firma_base64", "")
-                if firma_data:
-                    img_bytes = _parse_base64_image(firma_data)
-                    if img_bytes:
-                        try:
-                            sig_w, sig_h = 140, 55
-                            sig_path = os.path.join(Config.UPLOAD_FOLDER,
-                                f"_sig_{sp['id']}.png")
-                            with open(sig_path, "wb") as f:
-                                f.write(img_bytes)
-                            c.drawImage(ImageReader(io.BytesIO(img_bytes)),
-                                       sx - sig_w / 2, bottom_section_y + 45,
-                                       width=sig_w, height=sig_h,
-                                       mask='auto')
-                        except Exception:
-                            pass
-
-                # Línea de firma
-                line_w = 120
-                c.setStrokeColor(HexColor("#999999"))
-                c.setLineWidth(0.8)
-                c.line(sx - line_w / 2, bottom_section_y + 38,
-                       sx + line_w / 2, bottom_section_y + 38)
-
-                # Nombre del speaker
-                c.setFillColor(HexColor("#333333"))
-                c.setFont("Helvetica-Bold", 9)
-                c.drawCentredString(sx, bottom_section_y + 22, sp.get("nombre", ""))
-
-                # Cargo
-                c.setFillColor(HexColor("#777777"))
-                c.setFont("Helvetica", 8)
-                c.drawCentredString(sx, bottom_section_y + 10, sp.get("cargo", ""))
-    else:
-        # Sin speakers: QR centrado
-        qr_size = 90
-        c.drawImage(ImageReader(io.BytesIO(qr_png)),
-                     width / 2 - qr_size / 2, bottom_section_y,
-                     width=qr_size, height=qr_size)
-        c.setFillColor(HexColor("#888888"))
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(width / 2, bottom_section_y - 12,
-                            "Escanea para verificar")
-        c.drawCentredString(width / 2, bottom_section_y - 22,
-                            certificado["codigo_verif"])
-
-    # ── Código en esquina inferior ─────────────────────
+    # ── Código ID en esquina inferior izquierda ─────────
     c.setFillColor(HexColor("#bbbbbb"))
-    c.setFont("Helvetica", 7)
-    c.drawRightString(width - 45, 35, f"ID: {certificado['codigo_verif']}")
-    c.drawRightString(width - 45, 25, certificado["fecha_emision"])
+    c.setFont("Helvetica", 6)
+    c.drawString(30, 30, f"ID: {certificado['codigo_verif']}")
 
     c.save()
     logger.info(f"PDF generado: {filepath}")
-
-    # Limpiar archivos temporales
-    try:
-        os.remove(qr_path)
-    except Exception:
-        pass
-
     return filepath
 
 
 def send_certificate(cert_id: int) -> dict:
+    """Envía email con código de activación (sin adjuntar PDF)."""
     certificado = db.get_certificate_by_id(cert_id)
     if not certificado:
         raise ValueError(f"Certificado con ID {cert_id} no encontrado")
 
-    pdf_path = generate_certificate_pdf(certificado)
-    body_html = build_certificate_email_body(certificado)
-
-    # Ajustar para el nuevo formato con eventos
     evento = db.get_event_by_id(certificado["evento_id"]) if certificado.get("evento_id") else None
     event_name = evento.get("nombre", "Evento") if evento else "Evento"
     subject = f"Su Certificado - {event_name}"
+
+    body_html = build_activation_email_body(certificado, event_name)
 
     success = send_email_with_attachment(
         to_email=certificado["email"],
         subject=subject,
         body_html=body_html,
-        attachment_path=pdf_path,
+        attachment_path=None,
     )
 
     if success:
         db.mark_as_sent(cert_id)
-        logger.info(f"Certificado {cert_id} enviado a {certificado['email']}")
-        return {"success": True, "message": f"Certificado enviado a {certificado['email']}", "pdf_path": pdf_path}
+        logger.info(f"Email de activacion enviado a {certificado['email']}")
+        return {"success": True, "message": f"Correo de activacion enviado a {certificado['email']}"}
     else:
-        return {"success": False, "message": "Error al enviar el certificado por email", "pdf_path": pdf_path}
+        return {"success": False, "message": "Error al enviar el correo de activacion"}
 
 
 def send_certificate_bulk(cert_ids: list) -> dict:
+    """Envía emails de activación masivos (sin adjuntar PDFs)."""
     results = {"sent": [], "failed": []}
     for cert_id in cert_ids:
         try:
@@ -331,15 +217,14 @@ def send_certificate_bulk(cert_ids: list) -> dict:
             if certificado["enviado"]:
                 results["failed"].append({"id": cert_id, "reason": "Ya fue enviado"})
                 continue
-            pdf_path = generate_certificate_pdf(certificado)
             evento = db.get_event_by_id(certificado["evento_id"]) if certificado.get("evento_id") else None
             event_name = evento.get("nombre", "Evento") if evento else "Evento"
-            body_html = build_certificate_email_body(certificado)
+            body_html = build_activation_email_body(certificado, event_name)
             success = send_email_with_attachment(
                 to_email=certificado["email"],
                 subject=f"Su Certificado - {event_name}",
                 body_html=body_html,
-                attachment_path=pdf_path,
+                attachment_path=None,
             )
             if success:
                 db.mark_as_sent(cert_id)
@@ -363,7 +248,11 @@ def get_certificate(cert_id):
 
 
 def verify_certificate(code):
-    return db.get_certificate_by_code(code)
+    """Busca por código, intentando con y sin prefijo CERT-."""
+    result = db.get_certificate_by_code(code)
+    if not result and not code.startswith("CERT-"):
+        result = db.get_certificate_by_code(f"CERT-{code}")
+    return result
 
 
 def update_certificate(cert_id, **kwargs):
